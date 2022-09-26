@@ -16,7 +16,7 @@ use tokio::task;
 struct UpdateTask {
     downloader: Arc<Mutex<PipeDownloader>>,
     process_to_close: Option<String>,
-    is_running: bool,
+    is_running: Arc<Mutex<bool>>,
 }
 
 fn update_task_main(
@@ -60,16 +60,22 @@ impl UpdateTask {
         Self {
             downloader: Arc::new(Mutex::new(downloader)),
             process_to_close,
-            is_running: false,
+            is_running: Arc::new(Mutex::new(false)),
         }
     }
+
+    fn is_running(self: &Self) -> bool {
+        *self.is_running.lock().unwrap()
+    }
+
     fn run(self: &mut Self) -> anyhow::Result<()> {
-        if self.is_running {
+        if *self.is_running.lock().unwrap() {
             return Err(anyhow::anyhow!("Task is already running"));
         }
-        self.is_running = true;
+        *self.is_running.lock().unwrap() = true;
         let process_to_close = self.process_to_close.clone();
         let downloader = self.downloader.clone();
+        let is_running = self.is_running.clone();
 
         thread::spawn(move || {
             match update_task_main(process_to_close, downloader) {
@@ -78,6 +84,7 @@ impl UpdateTask {
                     println!("Error running update task: {}", e);
                 }
             };
+            *is_running.lock().unwrap() = false;
         });
         Ok(())
     }
@@ -172,7 +179,7 @@ async fn start_update() -> impl Responder {
         if updater_state
             .lighthouse_updater
             .as_ref()
-            .map(|upd| upd.is_running)
+            .map(|upd| upd.is_running())
             .unwrap_or(false)
         {
             return format!("Already running");
@@ -203,31 +210,37 @@ async fn pause_update() -> impl Responder {
 
 async fn update_loop() -> anyhow::Result<()> {
     loop {
-        log::info!("Update loop...");
-
-        if let Some(progress) = UPDATER_STATE
+        let is_running = UPDATER_STATE
             .lock()
             .unwrap()
             .lighthouse_updater
             .as_ref()
-            .map(|pd| {
-                pd.downloader
-                    .lock()
-                    .unwrap()
-                    .get_progress()
-                    .expect("Failed to get progress")
-                    .clone()
-            })
-        {
-            println!(
-                "downloaded: {} speed[current: {}/s total: {}/s], unpacked: {} [current: {}/s total: {}/s]",
-                human_bytes((progress.total_downloaded + progress.chunk_downloaded) as f64),
-                human_bytes(progress.progress_buckets_download.get_speed()),
-                progress.get_download_speed_human(),
-                human_bytes(progress.total_unpacked as f64),
-                human_bytes(progress.progress_buckets_unpack.get_speed()),
-                progress.get_unpack_speed_human(),
-            );
+            .map(|pd| pd.is_running()).unwrap_or(false);
+        if is_running {
+            if let Some(progress) = UPDATER_STATE
+                .lock()
+                .unwrap()
+                .lighthouse_updater
+                .as_ref()
+                .map(|pd| {
+                    pd.downloader
+                        .lock()
+                        .unwrap()
+                        .get_progress()
+                        .expect("Failed to get progress")
+                        .clone()
+                })
+            {
+                println!(
+                    "downloaded: {} speed[current: {}/s total: {}/s], unpacked: {} [current: {}/s total: {}/s]",
+                    human_bytes((progress.total_downloaded + progress.chunk_downloaded) as f64),
+                    human_bytes(progress.progress_buckets_download.get_speed()),
+                    progress.get_download_speed_human(),
+                    human_bytes(progress.total_unpacked as f64),
+                    human_bytes(progress.progress_buckets_unpack.get_speed()),
+                    progress.get_unpack_speed_human(),
+                );
+            }
         }
 
         /*{
