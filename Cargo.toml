@@ -1,0 +1,38 @@
+[package]
+name = "pipe_updater"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+base64 = { version = "0.13" }
+chrono = { version = "0.4", features = ["serde"] }
+envy = { version = "0.4" }
+futures = { version = "0.3" }
+hyper = { version = "0.14", features = ["full"] }
+log = { version =  "0.4" }
+routerify = { version = "3.0" }
+rustls = { version = "0.20" }
+rustls-pemfile = { version = "0.2" }
+sha3 = { version = "0.10" }
+serde = { version = "1", features = ["derive"] }
+serde_default = { version = "0.1" }
+serde_json = { version = "1" }
+serde_yaml = { version = "0.8" }
+thiserror = { version = "1" }
+tokio = { version = "1", features = ["io-util", "net", "rt-multi-thread", "signal"] }
+tokio-rustls = { version = "0.23"}
+toml = { version = "0.5" }
+
+anyhow = { version = "1"}
+dotenv = { version = "0.15" }
+flexi_logger = { version = "0.22" }
+structopt = { version = "0.3" }
+
+actix-web = { version = "4.1" }
+rusqlite = { version = "0.28", features = ["bundled"] }
+pipe_downloader = { git = "https://github.com/scx1332/pipe_downloader.git" }
+lazy_static = "1.4.0"
+human_bytes = "0.3.1"
+systemctl = "0.1.8"
