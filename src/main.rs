@@ -10,6 +10,7 @@ use lazy_static::lazy_static; // 1.4.0
 use pipe_downloader::pipe_downloader::{PipeDownloader, PipeDownloaderOptions, ProgressContext};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::Duration;
 use structopt::StructOpt;
 use tokio::task;
 
@@ -17,11 +18,19 @@ struct UpdateTask {
     downloader: Arc<Mutex<PipeDownloader>>,
     process_to_close: Option<String>,
     is_running: Arc<Mutex<bool>>,
+    paths_to_remove: Vec<PathBuf>,
+    target_user: Option<String>,
+    target_group: Option<String>,
+    target_path: Option<PathBuf>,
 }
 
 fn update_task_main(
     process_to_close: Option<String>,
     downloader: Arc<Mutex<PipeDownloader>>,
+    paths_to_remove: Vec<PathBuf>,
+    target_user: Option<String>,
+    target_group: Option<String>,
+    target_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     if let Some(process_to_close) = process_to_close.as_ref() {
         match systemctl::stop(process_to_close) {
@@ -32,6 +41,27 @@ fn update_task_main(
             }
         };
     }
+    for path in paths_to_remove {
+        if path.is_dir() {
+            log::info!("Removing directory: {}", path.display());
+            if let Err(err) = fs::remove_dir_all(&path) {
+                log::error!("Error removing directory: {}", err);
+                return Err(anyhow::anyhow!("Error removing directory: {}", err));
+            }
+        } else if path.is_file() {
+            log::info!("Removing file: {}", path.display());
+            if let Err(err) = fs::remove_file(&path) {
+                log::error!("Error removing file: {}", err);
+                return Err(anyhow::anyhow!("Error removing file: {}", err));
+            }
+        } else {
+            log::info!("Path not exist: {}", path.display());
+        }
+    }
+
+    //let system see that the directories are removed
+    thread::sleep(Duration::from_secs(1));
+
     match downloader.lock().unwrap().start_download() {
         Ok(_) => {}
         Err(e) => {
@@ -52,15 +82,49 @@ fn update_task_main(
             }
         };
     }
+
+    if let (Some(target_user), Some(target_group), Some(target_path)) =
+        (target_user, target_group, target_path)
+    {
+        let command = std::format!(
+            "chown -R {}:{} {}",
+            target_user,
+            target_group,
+            target_path.display()
+        )
+        .to_string();
+        match std::process::Command::new("/bin/bash")
+            .arg("-c")
+            .arg(command)
+            .output()
+        {
+            Ok(_) => {}
+            Err(e) => {
+                println!("Error changing owner: {}", e);
+                return Err(anyhow::anyhow!("Error changing owner: {}", e));
+            }
+        };
+    }
     Ok(())
 }
 
 impl UpdateTask {
-    fn new(downloader: PipeDownloader, process_to_close: Option<String>) -> Self {
+    fn new(
+        downloader: PipeDownloader,
+        process_to_close: Option<String>,
+        paths_to_remove: Vec<PathBuf>,
+        target_user: Option<String>,
+        target_group: Option<String>,
+        target_path: Option<PathBuf>,
+    ) -> Self {
         Self {
             downloader: Arc::new(Mutex::new(downloader)),
             process_to_close,
             is_running: Arc::new(Mutex::new(false)),
+            paths_to_remove,
+            target_user,
+            target_group,
+            target_path,
         }
     }
 
@@ -81,9 +145,20 @@ impl UpdateTask {
         let process_to_close = self.process_to_close.clone();
         let downloader = self.downloader.clone();
         let is_running = self.is_running.clone();
+        let paths_to_remove = self.paths_to_remove.clone();
+        let target_user = self.target_user.clone();
+        let target_group = self.target_group.clone();
+        let target_path = self.target_path.clone();
 
         thread::spawn(move || {
-            match update_task_main(process_to_close, downloader) {
+            match update_task_main(
+                process_to_close,
+                downloader,
+                paths_to_remove,
+                target_user,
+                target_group,
+                target_path,
+            ) {
                 Ok(_) => {}
                 Err(e) => {
                     println!("Error running update task: {}", e);
@@ -155,7 +230,7 @@ fn log_format(
     now: &mut DeferredNow,
     record: &Record,
 ) -> Result<(), std::io::Error> {
-    use std::time::{Duration, UNIX_EPOCH};
+    use std::time::UNIX_EPOCH;
     const DATE_FORMAT_STR: &str = "%Y-%m-%d %H:%M:%S%.3f %z";
 
     let timestamp = now.now().unix_timestamp_nanos() as u64;
@@ -206,13 +281,26 @@ async fn start_update() -> impl Responder {
         {
             return format!("Already running");
         } else {
+            let output_dir = PathBuf::from("output");
             let pd = PipeDownloader::new(
-                "http://mumbai-main.golem.network:14372/test.tar.lz4",
-                &PathBuf::from("output"),
+                "http://mumbai-main.golem.network:14372/beacon.tar.lz4",
+                &output_dir,
                 PipeDownloaderOptions::default(),
             );
-            let mut lighthouse_updater =
-                UpdateTask::new(pd, Some("lighthouse-bn.service".to_string()));
+            //check if windows
+            let process = if cfg!(windows) {
+                None
+            } else {
+                Some("lighthouse-bn.service".to_string())
+            };
+            let mut lighthouse_updater = UpdateTask::new(
+                pd,
+                process,
+                vec![output_dir],
+                Some("erigon".to_string()),
+                Some("erigon".to_string()),
+                Some(PathBuf::from("output")),
+            );
             if let Err(e) = lighthouse_updater.run() {
                 println!("Error starting update task: {}", e);
                 return format!("Error starting update task: {}", e);
