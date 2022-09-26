@@ -7,7 +7,7 @@ use flexi_logger::*;
 
 use human_bytes::human_bytes;
 use lazy_static::lazy_static; // 1.4.0
-use pipe_downloader::pipe_downloader::{PipeDownloader, PipeDownloaderOptions};
+use pipe_downloader::pipe_downloader::{PipeDownloader, PipeDownloaderOptions, ProgressContext};
 use std::sync::Arc;
 use std::sync::Mutex;
 use structopt::StructOpt;
@@ -66,6 +66,11 @@ impl UpdateTask {
 
     fn is_running(self: &Self) -> bool {
         *self.is_running.lock().unwrap()
+    }
+
+    fn get_progress(self: &Self) -> anyhow::Result<ProgressContext> {
+        let progress = self.downloader.lock().unwrap().get_progress();
+        Ok(progress?)
     }
 
     fn run(self: &mut Self) -> anyhow::Result<()> {
@@ -172,6 +177,23 @@ async fn greet(name: web::Path<String>) -> impl Responder {
     format!("Hello {name}!")
 }
 
+#[get("/progress")]
+async fn progress_endpoint() -> impl Responder {
+    {
+        let updater_state = UPDATER_STATE.lock().unwrap();
+        if let Some(progress) = updater_state
+            .lighthouse_updater
+            .as_ref()
+            .map(|upd| Some(upd.get_progress()))
+            .unwrap_or(None)
+        {
+            return format!("progress: {:?}", progress);
+        };
+    }
+
+    format!("Update started!")
+}
+
 #[get("/start")]
 async fn start_update() -> impl Responder {
     {
@@ -215,7 +237,8 @@ async fn update_loop() -> anyhow::Result<()> {
             .unwrap()
             .lighthouse_updater
             .as_ref()
-            .map(|pd| pd.is_running()).unwrap_or(false);
+            .map(|pd| pd.is_running())
+            .unwrap_or(false);
         if is_running {
             if let Some(progress) = UPDATER_STATE
                 .lock()
@@ -274,6 +297,7 @@ async fn main() -> anyhow::Result<()> {
             .route("/", web::get().to(HttpResponse::Ok))
             .service(greet)
             .service(start_update)
+            .service(progress_endpoint)
     })
     .bind(("0.0.0.0", 15100))
     .map_err(anyhow::Error::from)?
