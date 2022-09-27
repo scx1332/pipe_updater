@@ -5,9 +5,8 @@ use std::{env, fs, io, thread};
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 use flexi_logger::*;
 
-use human_bytes::human_bytes;
 use lazy_static::lazy_static; // 1.4.0
-use pipe_downloader::pipe_downloader::{PipeDownloader, PipeDownloaderOptions, ProgressContext};
+use pipe_downloader::pipe_downloader::{PipeDownloader, PipeDownloaderOptions};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -132,9 +131,8 @@ impl UpdateTask {
         *self.is_running.lock().unwrap()
     }
 
-    fn get_progress(self: &Self) -> anyhow::Result<ProgressContext> {
-        let progress = self.downloader.lock().unwrap().get_progress();
-        Ok(progress?)
+    fn get_progress(self: &Self) -> serde_json::Value {
+        self.downloader.lock().unwrap().get_progress_json()
     }
 
     fn run(self: &mut Self) -> anyhow::Result<()> {
@@ -254,19 +252,16 @@ async fn greet(name: web::Path<String>) -> impl Responder {
 
 #[get("/progress")]
 async fn progress_endpoint() -> impl Responder {
+    let updater_state = UPDATER_STATE.lock().unwrap();
+    if let Some(progress) = updater_state
+        .lighthouse_updater
+        .as_ref()
+        .map(|upd| Some(upd.get_progress()))
+        .unwrap_or(None)
     {
-        let updater_state = UPDATER_STATE.lock().unwrap();
-        if let Some(progress) = updater_state
-            .lighthouse_updater
-            .as_ref()
-            .map(|upd| Some(upd.get_progress()))
-            .unwrap_or(None)
-        {
-            return format!("progress: {:?}", progress);
-        };
-    }
-
-    format!("Update started!")
+        return web::Json(progress);
+    };
+    return web::Json(serde_json::json!({}));
 }
 
 #[get("/start")]
@@ -328,7 +323,7 @@ async fn update_loop() -> anyhow::Result<()> {
             .map(|pd| pd.is_running())
             .unwrap_or(false);
         if is_running {
-            if let Some(progress) = UPDATER_STATE
+            if let Some(progress_human_line) = UPDATER_STATE
                 .lock()
                 .unwrap()
                 .lighthouse_updater
@@ -337,20 +332,10 @@ async fn update_loop() -> anyhow::Result<()> {
                     pd.downloader
                         .lock()
                         .unwrap()
-                        .get_progress()
-                        .expect("Failed to get progress")
-                        .clone()
+                        .get_progress_human_line()
                 })
             {
-                println!(
-                    "downloaded: {} speed[current: {}/s total: {}/s], unpacked: {} [current: {}/s total: {}/s]",
-                    human_bytes((progress.total_downloaded + progress.chunk_downloaded) as f64),
-                    human_bytes(progress.progress_buckets_download.get_speed()),
-                    progress.get_download_speed_human(),
-                    human_bytes(progress.total_unpacked as f64),
-                    human_bytes(progress.progress_buckets_unpack.get_speed()),
-                    progress.get_unpack_speed_human(),
-                );
+                println!("{}", progress_human_line);
             }
         }
 

@@ -1172,11 +1172,12 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pipe_downloader"
-version = "0.1.0"
-source = "git+https://github.com/scx1332/pipe_downloader.git#74b478b60757a125b85ee8398adf80a76c1f1086"
+version = "0.1.1"
+source = "git+https://github.com/scx1332/pipe_downloader.git#81dd0858d1a53e3731190f83f82c0ade16510c10"
 dependencies = [
  "anyhow",
  "bzip2",
+ "chrono",
  "env_logger",
  "flate2",
  "human_bytes",
@@ -1187,6 +1188,7 @@ dependencies = [
  "lz4",
  "rand",
  "reqwest",
+ "serde_json",
  "structopt",
  "tar",
 ]
