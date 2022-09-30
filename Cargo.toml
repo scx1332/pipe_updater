@@ -23,7 +23,7 @@ flexi_logger = { version = "0.22" }
 structopt = { version = "0.3" }
 
 actix-web = { version = "4.1" }
-pipe_downloader = { git = "https://github.com/scx1332/pipe_downloader.git", version = "0.1.5" }
+pipe_downloader = { git = "https://github.com/scx1332/pipe_downloader.git", version = "0.1.7" }
 lazy_static = "1.4"
 human_bytes = "0.3"
 systemctl = "0.1"

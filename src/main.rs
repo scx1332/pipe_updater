@@ -173,7 +173,7 @@ impl UpdateTask {
     fn get_progress(self: &Self) -> serde_json::Value {
         json!({
             "stage": self.stage.lock().unwrap().clone(),
-            "error_message": self.error_message.lock().unwrap().clone(),
+            "errorMessage": self.error_message.lock().unwrap().clone(),
             "downloadProgress": self.downloader.lock().unwrap().get_progress_json()
         })
     }
@@ -302,7 +302,7 @@ async fn start_update() -> impl Responder {
             let url = env::var("ARCHIVE_URL")
                 .unwrap_or_else(|_| "http://mumbai-main.golem.network:14372/beacon.tar.lz4".into());
 
-            let pd = PipeDownloader::new(&url, &output_dir, PipeDownloaderOptions::default());
+            let pd = PipeDownloader::new(&url, &output_dir, PipeDownloaderOptions::from_env());
 
             let mut updater = UpdateTask::new(
                 pd,
