@@ -1,9 +1,7 @@
-use chrono::{DateTime, Local};
-use std::path::{Path, PathBuf};
-use std::{env, fs, io, thread};
+use std::path::PathBuf;
+use std::{env, fs, thread};
 
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
-use flexi_logger::*;
 
 use lazy_static::lazy_static; // 1.4.0
 use pipe_downloader::pipe_downloader::{PipeDownloader, PipeDownloaderOptions};
@@ -32,11 +30,18 @@ fn update_task_main(
     target_path: Option<PathBuf>,
 ) -> anyhow::Result<()> {
     if let Some(process_to_close) = process_to_close.as_ref() {
+        log::info!("Stopping process: {}", process_to_close);
         match systemctl::stop(process_to_close) {
-            Ok(_) => {}
+            Ok(_) => {
+                log::info!("Process stopped: {}", process_to_close);
+            }
             Err(e) => {
-                println!("Error stopping service: {}", e);
-                return Err(anyhow::anyhow!("Error stopping service: {}", e));
+                log::error!("Failed to stop process {}: {}", process_to_close, e);
+                return Err(anyhow::anyhow!(
+                    "Failed to stop process {}: {}",
+                    process_to_close,
+                    e
+                ));
             }
         };
     }
@@ -54,17 +59,19 @@ fn update_task_main(
                 return Err(anyhow::anyhow!("Error removing file: {}", err));
             }
         } else {
-            log::info!("Path not exist: {}", path.display());
+            log::info!("Trying to remove, path not exists: {}", path.display());
         }
     }
 
     //let system see that the directories are removed
     thread::sleep(Duration::from_secs(1));
 
+    log::info!("Start download");
+
     match downloader.lock().unwrap().start_download() {
         Ok(_) => {}
         Err(e) => {
-            println!("Error started downloading: {}", e);
+            log::error!("Error started downloading: {}", e);
             return Err(anyhow::anyhow!("Error started downloading: {}", e));
         }
     };
@@ -72,19 +79,18 @@ fn update_task_main(
     while !downloader.lock().unwrap().is_finished() {
         std::thread::sleep(std::time::Duration::from_secs(1));
     }
-    if let Some(process_to_close) = process_to_close.as_ref() {
-        match systemctl::restart(process_to_close) {
-            Ok(_) => {}
-            Err(e) => {
-                println!("Error starting service: {}", e);
-                return Err(anyhow::anyhow!("Error starting service: {}", e));
-            }
-        };
-    }
+
+    log::info!("Download finished");
 
     if let (Some(target_user), Some(target_group), Some(target_path)) =
         (target_user, target_group, target_path)
     {
+        log::info!(
+            "Changing path ownership: {} to {}:{}",
+            target_path.display(),
+            target_user,
+            target_group
+        );
         let command = std::format!(
             "chown -R {}:{} {}",
             target_user,
@@ -101,6 +107,25 @@ fn update_task_main(
             Err(e) => {
                 println!("Error changing owner: {}", e);
                 return Err(anyhow::anyhow!("Error changing owner: {}", e));
+            }
+        };
+    }
+
+    if let Some(error_message) = downloader.lock().unwrap().get_progress().error_message {
+        log::error!("Error downloading: {}", error_message);
+        return Err(anyhow::anyhow!(
+            "Download failed with error: {}",
+            error_message
+        ));
+    }
+
+    if let Some(process_to_close) = process_to_close.as_ref() {
+        log::info!("Starting process: {}", process_to_close);
+        match systemctl::restart(process_to_close) {
+            Ok(_) => {}
+            Err(e) => {
+                log::error!("Error restarting service: {}", e);
+                return Err(anyhow::anyhow!("Error starting service: {}", e));
             }
         };
     }
@@ -170,79 +195,29 @@ impl UpdateTask {
 
 struct AppState {
     started: bool,
-    lighthouse_updater: Option<UpdateTask>,
+    updater: Option<UpdateTask>,
 }
 
 lazy_static! {
     static ref UPDATER_STATE: Arc<Mutex<AppState>> = Arc::new(Mutex::new(AppState {
         started: false,
-        lighthouse_updater: None
+        updater: None
     }));
 }
 
 #[derive(StructOpt, Debug)]
 struct Cli {
-    /// Path to write logs to
-    #[structopt(long, short)]
-    pub log_dir: Option<PathBuf>,
-    // /// Listen address
+    /// Listen address
     #[structopt(long, default_value = "/usr/bin/systemctl")]
     pub systemctl_path: PathBuf,
-}
-fn setup_logging(log_dir: Option<impl AsRef<Path>>) -> anyhow::Result<()> {
-    let log_level = env::var("PROXY_LOG").unwrap_or_else(|_| "info".into());
-    env::set_var("PROXY_LOG", &log_level);
 
-    let mut logger = Logger::try_with_str(&log_level)?;
+    /// Listen address
+    #[structopt(long, default_value = "127.0.0.1")]
+    pub listen_addr: String,
 
-    if let Some(log_dir) = log_dir {
-        let log_dir = log_dir.as_ref();
-
-        match fs::create_dir_all(log_dir) {
-            Ok(_) => (),
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => (),
-            Err(e) => anyhow::bail!(format!("invalid log path: {}", e)),
-        }
-
-        logger = logger
-            .log_to_file(FileSpec::default().directory(log_dir))
-            .duplicate_to_stderr(Duplicate::All)
-            .rotate(
-                Criterion::Size(2 * 1024 * 1024),
-                Naming::Timestamps,
-                Cleanup::KeepLogFiles(7),
-            )
-    }
-
-    logger
-        .format_for_stderr(log_format)
-        .format_for_files(log_format)
-        .print_message()
-        .start()?;
-
-    Ok(())
-}
-
-fn log_format(
-    w: &mut dyn std::io::Write,
-    now: &mut DeferredNow,
-    record: &Record,
-) -> Result<(), std::io::Error> {
-    use std::time::UNIX_EPOCH;
-    const DATE_FORMAT_STR: &str = "%Y-%m-%d %H:%M:%S%.3f %z";
-
-    let timestamp = now.now().unix_timestamp_nanos() as u64;
-    let date = UNIX_EPOCH + Duration::from_nanos(timestamp);
-    let local_date = DateTime::<Local>::from(date);
-
-    write!(
-        w,
-        "[{} {:5} {}] {}",
-        local_date.format(DATE_FORMAT_STR),
-        record.level(),
-        record.module_path().unwrap_or("<unnamed>"),
-        record.args()
-    )
+    /// Listen port
+    #[structopt(long, default_value = "15100")]
+    pub listen_port: u16,
 }
 
 #[get("/hello/{name}")]
@@ -254,7 +229,7 @@ async fn greet(name: web::Path<String>) -> impl Responder {
 async fn progress_endpoint() -> impl Responder {
     let updater_state = UPDATER_STATE.lock().unwrap();
     if let Some(progress) = updater_state
-        .lighthouse_updater
+        .updater
         .as_ref()
         .map(|upd| Some(upd.get_progress()))
         .unwrap_or(None)
@@ -269,38 +244,45 @@ async fn start_update() -> impl Responder {
     {
         let mut updater_state = UPDATER_STATE.lock().unwrap();
         if updater_state
-            .lighthouse_updater
+            .updater
             .as_ref()
             .map(|upd| upd.is_running())
             .unwrap_or(false)
         {
             return format!("Already running");
         } else {
-            let output_dir = PathBuf::from("output");
-            let pd = PipeDownloader::new(
-                "http://mumbai-main.golem.network:14372/beacon.tar.lz4",
-                &output_dir,
-                PipeDownloaderOptions::default(),
-            );
-            //check if windows
-            let process = if cfg!(windows) {
-                None
-            } else {
-                Some("lighthouse-bn.service".to_string())
-            };
-            let mut lighthouse_updater = UpdateTask::new(
+            let output_dir =
+                PathBuf::from(env::var("OUTPUT_DIR").unwrap_or_else(|_| "output".into()));
+            let delete_dirs = env::var("DELETE_DIRS")
+                .unwrap_or_else(|_| "output".into())
+                .split(";")
+                .map(|s| PathBuf::from(s))
+                .collect::<Vec<_>>();
+
+            let process_to_close = env::var("PROCESS_CLOSE").map(|v| Some(v)).unwrap_or(None);
+            let target_user = env::var("TARGET_USER").unwrap_or_else(|_| "erigon".into());
+            let target_group = env::var("TARGET_GROUP").unwrap_or_else(|_| "erigon".into());
+            let target_change_owner_dir =
+                PathBuf::from(env::var("CHANGE_OWNER_PATH").unwrap_or_else(|_| "erigon".into()));
+
+            let url = env::var("ARCHIVE_URL")
+                .unwrap_or_else(|_| "http://mumbai-main.golem.network:14372/beacon.tar.lz4".into());
+
+            let pd = PipeDownloader::new(&url, &output_dir, PipeDownloaderOptions::default());
+
+            let mut updater = UpdateTask::new(
                 pd,
-                process,
-                vec![output_dir],
-                Some("erigon".to_string()),
-                Some("erigon".to_string()),
-                Some(PathBuf::from("output")),
+                process_to_close,
+                delete_dirs,
+                Some(target_user),
+                Some(target_group),
+                Some(target_change_owner_dir),
             );
-            if let Err(e) = lighthouse_updater.run() {
+            if let Err(e) = updater.run() {
                 println!("Error starting update task: {}", e);
                 return format!("Error starting update task: {}", e);
             };
-            updater_state.lighthouse_updater = Some(lighthouse_updater);
+            updater_state.updater = Some(updater);
         }
     }
 
@@ -313,12 +295,13 @@ async fn pause_update() -> impl Responder {
     format!("Update started!")
 }
 
+// for debug only, it can be disabled in production
 async fn update_loop() -> anyhow::Result<()> {
     loop {
         let is_running = UPDATER_STATE
             .lock()
             .unwrap()
-            .lighthouse_updater
+            .updater
             .as_ref()
             .map(|pd| pd.is_running())
             .unwrap_or(false);
@@ -326,16 +309,11 @@ async fn update_loop() -> anyhow::Result<()> {
             if let Some(progress_human_line) = UPDATER_STATE
                 .lock()
                 .unwrap()
-                .lighthouse_updater
+                .updater
                 .as_ref()
-                .map(|pd| {
-                    pd.downloader
-                        .lock()
-                        .unwrap()
-                        .get_progress_human_line()
-                })
+                .map(|pd| pd.downloader.lock().unwrap().get_progress_human_line())
             {
-                println!("{}", progress_human_line);
+                log::debug!("{}", progress_human_line);
             }
         }
 
@@ -352,11 +330,10 @@ async fn update_loop() -> anyhow::Result<()> {
 async fn main() -> anyhow::Result<()> {
     let _ = dotenv::dotenv();
     let cli: Cli = Cli::from_args();
+    env_logger::init();
 
     //needed for systemctl library
     env::set_var("SYSTEMCTL_PATH", &cli.systemctl_path);
-
-    setup_logging(cli.log_dir.as_ref())?;
 
     task::spawn(async move {
         match update_loop().await {
@@ -365,6 +342,12 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
+    log::info!(
+        "Starting update server: {}:{}",
+        cli.listen_addr,
+        cli.listen_port
+    );
+
     HttpServer::new(|| {
         App::new()
             .route("/", web::get().to(HttpResponse::Ok))
@@ -372,7 +355,8 @@ async fn main() -> anyhow::Result<()> {
             .service(start_update)
             .service(progress_endpoint)
     })
-    .bind(("0.0.0.0", 15100))
+    .workers(1)
+    .bind((cli.listen_addr, cli.listen_port))
     .map_err(anyhow::Error::from)?
     .run()
     .await
