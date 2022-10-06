@@ -34,12 +34,22 @@ jobs:
           command: build
           args: --release --target aarch64-unknown-linux-musl
 
+      - name: Compress action step
+        uses: a7ul/tar-action@v1.1.0
+        id: compress
+        with:
+          command: c
+          cwd: ./target/aarch64-unknown-linux-musl/release/
+          files: |
+            ./pipe_updater
+          outPath: pipe_updater_aarch64.tar.gz
+          
       - name: Upload
         uses: svenstaro/upload-release-action@2.3.0
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file: target/aarch64-unknown-linux-musl/release/pipe_updater
-          asset_name: pipe_updater_aarch64
+          file: target/aarch64-unknown-linux-musl/release/pipe_updater_aarch64.tar.gz
+          asset_name: pipe_updater_aarch64.tar.gz
           tag: ${{ github.ref }}
           overwrite: true
           body: "Binary for arm"
