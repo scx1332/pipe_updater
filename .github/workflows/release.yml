@@ -1,0 +1,46 @@
+name: Release for ARM
+
+on:
+  push:
+    tags:
+      - v*
+
+jobs:
+  build_arm:
+    name: Build Arm
+    env:
+      RUSTFLAGS: "-D warnings -C opt-level=z -C debuginfo=1"
+      X86_64_PC_WINDOWS_MSVC_OPENSSL_DIR: c:/vcpkg/installed/x64-windows
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v1
+
+      - name: Install last stable Rust cross compiler
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: aarch64-unknown-linux-musl
+          override: true
+
+      - name: Build binary
+        uses: actions-rs/cargo@v1
+        with:
+          use-cross: true
+          command: build
+          args: --release --target aarch64-unknown-linux-musl
+
+      - name: Upload
+        uses: svenstaro/upload-release-action@2.3.0
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: target/aarch64-unknown-linux-musl/release/pipe_updater
+          asset_name: pipe_updater_aarch64
+          tag: ${{ github.ref }}
+          overwrite: true
+          body: "Binary for arm"
+          
