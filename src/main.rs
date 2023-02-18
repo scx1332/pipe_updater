@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::{env, fs, thread};
 
-use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
+use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
 
 use lazy_static::lazy_static; // 1.4.0
 use pipe_downloader::pipe_downloader::{PipeDownloader, PipeDownloaderOptions};
@@ -166,6 +166,18 @@ impl UpdateTask {
         }
     }
 
+    fn pause(self: &Self) {
+        self.downloader.lock().unwrap().pause_download();
+    }
+
+    fn resume(self: &Self) {
+        self.downloader.lock().unwrap().resume_download();
+    }
+
+    fn abort(self: &Self) {
+        self.downloader.lock().unwrap().signal_stop();
+    }
+
     fn is_running(self: &Self) -> bool {
         *self.is_running.lock().unwrap()
     }
@@ -216,13 +228,11 @@ impl UpdateTask {
 }
 
 struct AppState {
-    started: bool,
     updater: Option<UpdateTask>,
 }
 
 lazy_static! {
     static ref UPDATER_STATE: Arc<Mutex<AppState>> = Arc::new(Mutex::new(AppState {
-        started: false,
         updater: None
     }));
 }
@@ -263,8 +273,7 @@ async fn progress_endpoint() -> impl Responder {
     );
 }
 
-#[get("/start")]
-async fn start_update() -> impl Responder {
+async fn update() -> String {
     {
         let mut updater_state = UPDATER_STATE.lock().unwrap();
         if updater_state
@@ -322,12 +331,50 @@ async fn start_update() -> impl Responder {
 
     format!("Update started!")
 }
+#[post("/start")]
+async fn start_update() -> impl Responder {
+    update().await
+}
+
+#[get("/debug_start")]
+async fn start_update_debug() -> impl Responder {
+    update().await
+}
+
 
 #[get("/pause")]
 async fn pause_update() -> impl Responder {
-    UPDATER_STATE.lock().unwrap().started = true;
-    format!("Update started!")
+    if let Some(updater) = UPDATER_STATE.lock().unwrap().updater.as_ref() {
+        if updater.is_running() {
+            updater.pause();
+            return format!("Update paused");
+        }
+    }
+    format!("Failed to pause!")
 }
+
+#[get("/resume")]
+async fn resume_update() -> impl Responder {
+    if let Some(updater) = UPDATER_STATE.lock().unwrap().updater.as_ref() {
+        if updater.is_running() {
+            updater.resume();
+            return format!("Update resumed");
+        }
+    }
+    format!("Failed to resume!")
+}
+
+#[get("/abort")]
+async fn abort_update() -> impl Responder {
+    if let Some(updater) = UPDATER_STATE.lock().unwrap().updater.as_ref() {
+        if updater.is_running() {
+            updater.abort();
+            return format!("Update aborted");
+        }
+    }
+    format!("Failed to abort!")
+}
+
 
 // for debug only, it can be disabled in production
 async fn update_loop() -> anyhow::Result<()> {
@@ -388,6 +435,10 @@ async fn main() -> anyhow::Result<()> {
             .service(greet)
             .service(start_update)
             .service(progress_endpoint)
+            .service(start_update_debug)
+            .service(pause_update)
+            .service(resume_update)
+            .service(abort_update)
     })
     .workers(1)
     .bind((cli.listen_addr, cli.listen_port))

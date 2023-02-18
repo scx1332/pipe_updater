@@ -1146,8 +1146,8 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pipe_downloader"
-version = "0.1.7"
-source = "git+https://github.com/scx1332/pipe_downloader.git#aee373551be372e218ed3a944c9059287ddcd5ab"
+version = "0.3.1"
+source = "git+https://github.com/scx1332/pipe_downloader.git#f06ba808610a72d77e792a97d9866b2f61c60904"
 dependencies = [
  "anyhow",
  "bzip2",
